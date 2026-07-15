@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inferlab"
+version = "0.1.0"
+description = "From-scratch LLM inference techniques, benchmarked rigorously."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Ruchit" }]
+dependencies = [
+    "torch>=2.2",
+    "transformers>=4.40",
+    "accelerate>=0.30",
+    "bitsandbytes>=0.43; platform_system == 'Linux'",
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "tqdm",
+    "datasets",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov"]
+
+[project.scripts]
+inferlab = "inferlab.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["inferlab*"]
