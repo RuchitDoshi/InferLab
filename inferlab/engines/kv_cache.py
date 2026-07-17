@@ -40,34 +40,31 @@ from .base import Engine, GenerationConfig, GenerationResult
 @dataclass
 class KVCache:
     """
-    Own your own KV cache. One entry per transformer layer.
-
-    TODO(ruchit): decide the tensor shape convention up front and write it
-    here as a comment, e.g. (batch, n_kv_heads, seq_len, head_dim). This
-    shape decision matters a lot in Week 2 -- PagedAttention will replace
-    this contiguous-tensor cache with a block-table version, so know exactly
-    what contract you're breaking/preserving when you get there.
+    Own KV cache for ONE decoder layer (we'll extend to multi-layer once
+    this is verified). Holds the accumulated K and V tensors across
+    decode steps.
     """
-    # keys[layer_idx] -> tensor
     keys: list = field(default_factory=list)
     values: list = field(default_factory=list)
 
     def update(self, layer_idx: int, new_k: torch.Tensor, new_v: torch.Tensor):
         """
-        TODO(ruchit): append new_k/new_v (for the newly computed token(s))
-        to this layer's cache along the sequence dimension, and return the
-        FULL k, v tensors for that layer (existing + new) for attention to
-        use.
-
-        EDGE CASE: first call for a given layer_idx -- self.keys may not
-        have an entry yet. Handle initialization vs append distinctly
-        rather than assuming keys[layer_idx] already exists.
+        append new_k/new_v for this layer, return full k, v for that layer
         """
-        raise NotImplementedError
+        if layer_idx >= len(self.keys):
+            self.keys.append(new_k)
+            self.values.append(new_v)
+        
+        else:
+            self.keys[layer_idx] = torch.cat([self.keys[layer_idx], new_k], dim=2)
+            self.values[layer_idx] = torch.cat([self.values[layer_idx], new_v], dim=2)
 
-    def current_length(self) -> int:
-        """TODO(ruchit): return current cached sequence length (0 if empty)."""
-        raise NotImplementedError
+        return self.keys[layer_idx], self.values[layer_idx]
+
+
+    def current_length(self, layer_idx: int) -> int:
+        """cached sequence length for a SPECIFIC layer, before this call's update"""
+        return 0 if layer_idx >= len(self.keys) else self.keys[layer_idx].size(2)
 
     def memory_bytes(self) -> int:
         """
@@ -78,7 +75,9 @@ class KVCache:
         while the cache is fresh in your mind, even though you won't use
         it until Week 2 -- it's a two-line method and easy to forget later.
         """
-        raise NotImplementedError
+        if not self.keys or not self.values:
+            return 0
+        return (sum(k.numel() for k in self.keys) + sum(v.numel() for v in self.values)) * self.keys[0].element_size()
 
 
 class KVCacheEngine(Engine):
