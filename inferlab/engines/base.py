@@ -109,6 +109,7 @@ class Engine(ABC):
         """
         raise NotImplementedError
 
+    @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, config: GenerationConfig,
                  attention_mask: Optional[torch.Tensor] = None) -> GenerationResult:
         """
@@ -134,8 +135,7 @@ class Engine(ABC):
         generate_start_time = time.perf_counter()
 
         state = self.prefill(input_ids, attention_mask)
-        timestamp_after_prefill = time.perf_counter()
-        
+
         step_timestamps = []
 
         generated_tokens = []

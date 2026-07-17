@@ -127,7 +127,7 @@ class KVCacheEngine(Engine):
         return logits, new_past_key_values
 
 
-    
+    @torch.no_grad()
     def generate(self, input_ids: torch.Tensor, config: GenerationConfig,
                  attention_mask: Optional[torch.Tensor] = None) -> GenerationResult:
         """

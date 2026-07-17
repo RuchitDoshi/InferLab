@@ -10,13 +10,13 @@ import torch
 
 def peak_vram_bytes(device: str = "cuda") -> int:
     """
-    TODO(ruchit): use torch.cuda.max_memory_allocated(device) to get peak
+    use torch.cuda.max_memory_allocated(device) to get peak
     allocated bytes since the last reset. Caller is responsible for calling
     torch.cuda.reset_peak_memory_stats(device) before the region they want
     to measure -- document that requirement clearly in the docstring so
     bench/runner.py uses it correctly (reset -> run -> read peak).
     """
-    raise NotImplementedError
+    return torch.cuda.max_memory_allocated(device)
 
 
 def theoretical_kv_cache_bytes(
@@ -28,7 +28,7 @@ def theoretical_kv_cache_bytes(
     batch_size: int = 1,
 ) -> int:
     """
-    TODO(ruchit): implement the standard KV cache memory formula:
+    implement the standard KV cache memory formula:
 
         2 (K and V) * num_layers * num_kv_heads * head_dim * seq_len
         * dtype_bytes * batch_size
@@ -40,4 +40,4 @@ def theoretical_kv_cache_bytes(
     against a hand-computed example -- don't discover an off-by-factor-of-2
     bug in Week 2 when it's tangled up with the GQA writeup.
     """
-    raise NotImplementedError
+    return 2 * num_layers * num_kv_heads * head_dim * seq_len * dtype_bytes * batch_size

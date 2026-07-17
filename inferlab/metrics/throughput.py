@@ -23,4 +23,10 @@ def compute_throughput(num_generated_tokens: int, e2e_seconds: float,
     against division by zero rather than letting it NaN silently into a
     benchmark CSV.
     """
-    raise NotImplementedError
+    if e2e_seconds == 0:
+        raise ValueError(f"e2e_seconds must be positive, got {e2e_seconds}")
+    else:
+        tokens_per_sec = num_generated_tokens / e2e_seconds
+        requests_per_sec = num_requests / e2e_seconds if num_requests > 1 else None
+    
+        return ThroughputReport(tokens_per_sec=tokens_per_sec, requests_per_sec=requests_per_sec)
