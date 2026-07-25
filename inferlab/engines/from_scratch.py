@@ -5,6 +5,7 @@ import time
 from typing import Optional
 from inferlab.attention.from_scratch_layer import qwen_full_forward
 from inferlab.engines.kv_cache import KVCache
+from inferlab.attention.paged_kv_cache import PagedKVCache
 from inferlab.engines.base import Engine, GenerationConfig, GenerationResult
 
 class FromScratchEngine(Engine):
@@ -14,6 +15,31 @@ class FromScratchEngine(Engine):
     with hand-written GQA-aware KV caching (engines/kv_cache.py's
     multi-layer KVCache).
     """
+    def __init__(self, model, device: str = "cuda", cache_type: str = "kv_cache"):
+        super().__init__(model, device)
+        self.cache_type = cache_type
+
+        if cache_type == "paged_kv_cache":
+            self.cache_class = PagedKVCache
+            config = model.config
+            num_layers = config.num_hidden_layers
+            num_kv_heads = config.num_key_value_heads
+            head_dim = config.hidden_size // config.num_attention_heads
+            self.cache_class_config = {
+                "num_layers": num_layers,
+                "num_kv_heads": num_kv_heads,
+                "head_dim": head_dim,
+                "block_size": 16,
+                "num_blocks": 300,
+                "dtype": next(self.model.parameters()).dtype,
+                "device": device
+            }
+        elif cache_type == "kv_cache":
+            self.cache_class_config = {}
+            self.cache_class = KVCache
+        else:
+            raise ValueError(f"Unknown cache_type: {cache_type}. Supported types: 'kv_cache', 'paged_kv_cache'.")
+
     def prefill(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None):
         """
         Run the forward pass over the full prompt once, populating a
@@ -55,9 +81,9 @@ class FromScratchEngine(Engine):
            step_timestamps, generate_start).
         """
         generate_start_time = time.perf_counter()
-        kv_cache = KVCache()
+        self.cache = self.cache_class(**self.cache_class_config)
 
-        hidden_states = qwen_full_forward(input_ids, self.model, kv_cache=kv_cache)
+        hidden_states = qwen_full_forward(input_ids, self.model, kv_cache=self.cache)
         logits = F.linear(hidden_states[:, -1:, :], self.model.lm_head.weight)
         next_token_id = torch.argmax(logits.squeeze(1), dim=-1, keepdim=True)  # Greedy decoding for now
 
@@ -71,7 +97,7 @@ class FromScratchEngine(Engine):
                 break
             
             # Call qwen_full_forward for the next token
-            hidden_states = qwen_full_forward(next_token_id, self.model, kv_cache=kv_cache)
+            hidden_states = qwen_full_forward(next_token_id, self.model, kv_cache=self.cache)
             logits = F.linear(hidden_states[:, -1:, :], self.model.lm_head.weight)
             next_token_id = torch.argmax(logits.squeeze(1), dim=-1, keepdim=True)  # Greedy decoding for now
 

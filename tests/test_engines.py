@@ -52,8 +52,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from inferlab.engines.naive import NaiveEngine
 from inferlab.engines.kv_cache import KVCacheEngine
 from inferlab.engines.base import GenerationConfig
+from inferlab.engines.from_scratch import FromScratchEngine
 
 TINY_MODEL = "hf-internal-testing/tiny-random-gpt2"
+TINY_QWEN_MODEL = "yujiepan/qwen2.5-tiny-random"
 
 @pytest.fixture(scope="module")
 def tiny_model_and_tokenizer():
@@ -114,3 +116,32 @@ def test_kv_cache_respects_eos_token():
 
     assert result.generated_ids.shape[1] == 1
     assert result.generated_ids[0, 0].item() == forced_eos_id
+
+
+def test_from_scratch_matches_naive_greedy():
+    """
+    TODO: same pattern as test_kv_cache_matches_naive_greedy, but:
+    - use TINY_QWEN_MODEL instead of TINY_MODEL (architecture-specific)
+    - compare FromScratchEngine against NaiveEngine
+    - both engines need SEPARATE model instances (same reason as before --
+      don't share one model object between two engines in the same test)
+    """
+    model_naive = AutoModelForCausalLM.from_pretrained(TINY_QWEN_MODEL, torch_dtype=torch.float32)
+    model_from_scratch = AutoModelForCausalLM.from_pretrained(TINY_QWEN_MODEL, torch_dtype=torch.float32)
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN_MODEL)
+    
+    prompt = "Hello, world!"
+    input_ids = tokenizer(prompt, return_tensors="pt").input_ids
+    
+    # Naive Engine
+    naive_engine = NaiveEngine(model_naive, device="cpu")  # CPU is fine for a tiny model
+    naive_config = GenerationConfig(do_sample=False, max_new_tokens=5)
+    naive_result = naive_engine.generate(input_ids, config=naive_config)
+    
+    # From Scratch Engine
+    from_scratch_engine = FromScratchEngine(model_from_scratch, device="cpu")  # CPU is fine for a tiny model
+    from_scratch_config = GenerationConfig(do_sample=False, max_new_tokens=5)
+    from_scratch_result = from_scratch_engine.generate(input_ids, config=from_scratch_config)
+    
+    assert torch.equal(naive_result.generated_ids, from_scratch_result.generated_ids)
+    
