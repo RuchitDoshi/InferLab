@@ -25,7 +25,7 @@ class PagedKVCache:
     num_kv_heads: int
     head_dim: int
     block_size: int = 16
-    num_blocks: int = 100  # total blocks in the pool, across all layers
+    num_blocks: int = 100  
     dtype: torch.dtype = torch.float16
     device: str = "cuda"
 
@@ -57,9 +57,24 @@ class PagedKVCache:
             for _ in range(self.num_layers)
         ]
         self.free_blocks = [list(range(self.num_blocks)) for _ in range(self.num_layers)]
-        self.block_table = [[] for _ in range(self.num_layers)]
-        self._current_length = [0 for _ in range(self.num_layers)]  # Track current length per layer
+        self.block_table = {}
+        self._current_length = {}
 
+    def evict(self, sequence_id) -> int:
+        """
+        Evict the oldest block for the given layer.
+        Returns the index of the evicted block.
+        """
+        if sequence_id not in self.block_table:
+            raise RuntimeError(f"No blocks allocated for sequence {sequence_id}.")
+
+        for layer_idx in range(self.num_layers):
+
+            # Remove all the blocks for this layer from the block_table and return them to free_blocks
+            self.free_blocks[layer_idx].extend(self.block_table[sequence_id][layer_idx])
+
+        self.block_table.pop(sequence_id, None)  # Remove the block table entry for this sequence
+        self._current_length.pop(sequence_id, None)  # Reset the current length for this sequence
 
     def allocate_block(self, layer_idx: int) -> int:
         """
@@ -72,7 +87,7 @@ class PagedKVCache:
             raise RuntimeError(f"No free blocks available (pool size: {self.num_blocks}).")
         return self.free_blocks[layer_idx].pop()
 
-    def _update_single_token(self, layer_idx: int, new_k: torch.Tensor, new_v: torch.Tensor):
+    def _update_single_token(self, layer_idx: int, new_k: torch.Tensor, new_v: torch.Tensor, sequence_id=None):
         """
         Update the key and value caches for a single token (seq_len=1) for the given layer.
 
@@ -84,29 +99,29 @@ class PagedKVCache:
         This method handles the block allocation and writing in place, as well
         as reconstructing the full k, v tensors for the layer after the update.
         """
-        block_table_position = self._current_length[layer_idx] // self.block_size
-        slot_within_block = self._current_length[layer_idx] % self.block_size
+        block_table_position = self._current_length[sequence_id][layer_idx] // self.block_size
+        slot_within_block = self._current_length[sequence_id][layer_idx] % self.block_size
 
-        if block_table_position >= len(self.block_table[layer_idx]):
+        if block_table_position >= len(self.block_table[sequence_id][layer_idx]):
             new_block_idx = self.allocate_block(layer_idx)
-            self.block_table[layer_idx].append(new_block_idx)
+            self.block_table[sequence_id][layer_idx].append(new_block_idx)
 
-        actual_block_index = self.block_table[layer_idx][block_table_position]
+        actual_block_index = self.block_table[sequence_id][layer_idx][block_table_position]
 
         # Write in place
         self.key_pools[layer_idx][actual_block_index, :,slot_within_block] = new_k.squeeze(2).squeeze(0)
         self.value_pools[layer_idx][actual_block_index,:,slot_within_block] = new_v.squeeze(2).squeeze(0)
 
         # Increment length counter
-        self._current_length[layer_idx] += 1
+        self._current_length[sequence_id][layer_idx] += 1
 
         # Reconstruct full k, v for this layer
-        full_k = torch.cat([self.key_pools[layer_idx][idx] for idx in self.block_table[layer_idx]], dim=1)[:, :self._current_length[layer_idx]].unsqueeze(0)  # Add the batch dimension back
-        full_v = torch.cat([self.value_pools[layer_idx][idx] for idx in self.block_table[layer_idx]], dim=1)[:, :self._current_length[layer_idx]].unsqueeze(0)  # Add the batch dimension back
+        full_k = torch.cat([self.key_pools[layer_idx][idx] for idx in self.block_table[sequence_id][layer_idx]], dim=1)[:, :self._current_length[sequence_id][layer_idx]].unsqueeze(0)  # Add the batch dimension back
+        full_v = torch.cat([self.value_pools[layer_idx][idx] for idx in self.block_table[sequence_id][layer_idx]], dim=1)[:, :self._current_length[sequence_id][layer_idx]].unsqueeze(0)  # Add the batch dimension back
 
         return full_k, full_v
 
-    def _update_batch(self, layer_idx: int, new_k: torch.Tensor, new_v: torch.Tensor):
+    def _update_batch(self, layer_idx: int, new_k: torch.Tensor, new_v: torch.Tensor, sequence_id=None):
         """
         Update the key and value caches for the given layer with new_k and new_v.
 
@@ -119,33 +134,35 @@ class PagedKVCache:
         Returns the full reconstructed key and value caches for this layer
         after the update.
         """
+        sequence_id = sequence_id if sequence_id is not None else "default"
+        
         seq_len = new_k.size(2)
-        num_blocks_needed = torch.ceil(torch.tensor(self._current_length[layer_idx] + seq_len) / self.block_size).int().item()
+        num_blocks_needed = torch.ceil(torch.tensor(self._current_length[sequence_id][layer_idx] + seq_len) / self.block_size).int().item()
 
-        while len(self.block_table[layer_idx]) < num_blocks_needed:
+        while len(self.block_table[sequence_id][layer_idx]) < num_blocks_needed:
             new_block_idx = self.allocate_block(layer_idx)
-            self.block_table[layer_idx].append(new_block_idx)
+            self.block_table[sequence_id][layer_idx].append(new_block_idx)
 
         # Write in place for each token in the new_k/new_v
         tokens_written = 0
         while tokens_written < seq_len:
-            slot_start = (self._current_length[layer_idx] + tokens_written) % self.block_size
+            slot_start = (self._current_length[sequence_id][layer_idx] + tokens_written) % self.block_size
             chunk_size = min(self.block_size - slot_start, seq_len - tokens_written)
-            block_table_position = (self._current_length[layer_idx] + tokens_written) // self.block_size
+            block_table_position = (self._current_length[sequence_id][layer_idx] + tokens_written) // self.block_size
 
-            self.key_pools[layer_idx][self.block_table[layer_idx][block_table_position], :, slot_start:slot_start + chunk_size] = new_k[:, :, tokens_written:tokens_written + chunk_size, :].squeeze(0)
-            self.value_pools[layer_idx][self.block_table[layer_idx][block_table_position], :, slot_start:slot_start + chunk_size] = new_v[:, :, tokens_written:tokens_written + chunk_size, :].squeeze(0)
+            self.key_pools[layer_idx][self.block_table[sequence_id][layer_idx][block_table_position], :, slot_start:slot_start + chunk_size] = new_k[:, :, tokens_written:tokens_written + chunk_size, :].squeeze(0)
+            self.value_pools[layer_idx][self.block_table[sequence_id][layer_idx][block_table_position], :, slot_start:slot_start + chunk_size] = new_v[:, :, tokens_written:tokens_written + chunk_size, :].squeeze(0)
             tokens_written += chunk_size
 
-        self._current_length[layer_idx] += seq_len
+        self._current_length[sequence_id][layer_idx] += seq_len
 
-        full_k = torch.cat([self.key_pools[layer_idx][idx] for idx in self.block_table[layer_idx]], dim=1)[:, :self._current_length[layer_idx]].unsqueeze(0)  # Add the batch dimension back
-        full_v = torch.cat([self.value_pools[layer_idx][idx] for idx in self.block_table[layer_idx]], dim=1)[:, :self._current_length[layer_idx]].unsqueeze(0)  # Add the batch dimension back
+        full_k = torch.cat([self.key_pools[layer_idx][idx] for idx in self.block_table[sequence_id][layer_idx]], dim=1)[:, :self._current_length[sequence_id][layer_idx]].unsqueeze(0)  # Add the batch dimension back
+        full_v = torch.cat([self.value_pools[layer_idx][idx] for idx in self.block_table[sequence_id][layer_idx]], dim=1)[:, :self._current_length[sequence_id][layer_idx]].unsqueeze(0)  # Add the batch dimension back
 
 
         return full_k, full_v
 
-    def update(self, layer_idx: int, new_k: torch.Tensor, new_v: torch.Tensor):
+    def update(self, layer_idx: int, new_k: torch.Tensor, new_v: torch.Tensor, sequence_id=None):
         """
         Update the key and value caches for the given layer with new_k and new_v.
 
@@ -157,17 +174,30 @@ class PagedKVCache:
         Returns the full reconstructed key and value caches for this layer
         after the update.
         """
+        sequence_id = sequence_id if sequence_id is not None else "default"
         seq_len = new_k.size(2)
 
+        if sequence_id not in self._current_length:
+            self._current_length[sequence_id] = [0] * self.num_layers
+
+        if sequence_id not in self.block_table:
+            self.block_table[sequence_id] = [[] for _ in range(self.num_layers)]
+
         if seq_len > 1:
-            full_k, full_v = self._update_batch(layer_idx, new_k, new_v)
+            full_k, full_v = self._update_batch(layer_idx, new_k, new_v, sequence_id)
         else:
             # If seq_len == 1, we can directly call _update_single_token without looping
-            full_k, full_v = self._update_single_token(layer_idx, new_k, new_v)
+            full_k, full_v = self._update_single_token(layer_idx, new_k, new_v, sequence_id)
 
         return full_k, full_v
 
 
-    def current_length(self, layer_idx: int) -> int:
+    def current_length(self, layer_idx: int, sequence_id=None) -> int:
         """TODO: however you decided to track this in __post_init__."""
-        return self._current_length[layer_idx]
+
+        sequence_id = sequence_id if sequence_id is not None else "default"
+
+        if sequence_id not in self._current_length:
+            return 0  # If the sequence_id is not present, it means no tokens have been cached yet
+
+        return self._current_length[sequence_id][layer_idx]

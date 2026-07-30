@@ -1,0 +1,9 @@
+{
+  "scheduler": "shared",
+  "num_sequences": 10,
+  "max_active": 3,
+  "elapsed_sec": 8.462154814973474,
+  "peak_allocated_mb": 1127.54443359375,
+  "peak_reserved_mb": 1152.0,
+  "fragmentation_gap_mb": 24.45556640625
+}

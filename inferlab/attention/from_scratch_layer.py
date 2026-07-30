@@ -80,7 +80,7 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     return x.reshape(batch, num_kv_heads * n_rep, seq_len, head_dim)
 
 
-def qwen_decoder_layer_forward(hidden_states, layer, config, layer_idx, kv_cache: "KVCache" = None):
+def qwen_decoder_layer_forward(hidden_states, layer, config, layer_idx, kv_cache: "KVCache" = None, sequence_id=None):
     """
     TODO: full forward pass for one decoder layer.
 
@@ -134,13 +134,17 @@ def qwen_decoder_layer_forward(hidden_states, layer, config, layer_idx, kv_cache
     v = v_proj.view(batch_size, seq_len, config.num_key_value_heads, head_dim).transpose(1, 2)
 
     # Step 5: Build RoPE cache and apply to Q and K
-    position_offset = kv_cache.current_length(layer_idx) if kv_cache is not None else 0
+    if kv_cache is not None:
+        position_offset = kv_cache.current_length(layer_idx, sequence_id=sequence_id) if sequence_id is not None else kv_cache.current_length(layer_idx)
+    else:
+        position_offset = 0
+
     cos, sin = build_rope_cache(seq_len, head_dim, config.rope_parameters["rope_theta"], position_offset=position_offset, device=x.device)
     q, k = apply_rope(q, k, cos, sin)
 
     if kv_cache is not None:
         # Update KV cache with new K/V and get the full K/V for attention
-        k, v = kv_cache.update(layer_idx, k, v)
+        k, v = kv_cache.update(layer_idx, k, v, sequence_id=sequence_id) if sequence_id is not None else kv_cache.update(layer_idx, k, v)
 
     # Step 6: Repeat KV heads to match Q's head count
     k = repeat_kv(k, config.num_attention_heads // config.num_key_value_heads)
@@ -183,7 +187,7 @@ def qwen_decoder_layer_forward(hidden_states, layer, config, layer_idx, kv_cache
     # Step 16: Return final hidden states
     return hidden_states
 
-def qwen_full_forward(input_ids, model, kv_cache: "KVCache" = None):
+def qwen_full_forward(input_ids, model, kv_cache: "KVCache" = None, sequence_id=None):
     """
     Runs embedding -> all N decoder layers -> final norm -> returns
     hidden_states (NOT logits -- lm_head projection is a separate,
@@ -195,7 +199,7 @@ def qwen_full_forward(input_ids, model, kv_cache: "KVCache" = None):
 
     # Step 2: Iterate through all decoder layers
     for layer_idx, layer in enumerate(model.model.layers):
-        hidden_states = qwen_decoder_layer_forward(hidden_states, layer, model.config, layer_idx, kv_cache=kv_cache)
+        hidden_states = qwen_decoder_layer_forward(hidden_states, layer, model.config, layer_idx, kv_cache=kv_cache, sequence_id=sequence_id)
 
     # Step 3: Final RMSNorm
     hidden_states = rms_norm(hidden_states, model.model.norm.weight, eps=model.config.rms_norm_eps)

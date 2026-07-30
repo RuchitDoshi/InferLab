@@ -1,0 +1,9 @@
+{
+  "scheduler": "private",
+  "num_sequences": 10,
+  "max_active": 3,
+  "elapsed_sec": 7.110024211928248,
+  "peak_allocated_mb": 1105.87255859375,
+  "peak_reserved_mb": 1156.0,
+  "fragmentation_gap_mb": 50.12744140625
+}
