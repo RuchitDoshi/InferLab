@@ -53,6 +53,7 @@ from inferlab.engines.naive import NaiveEngine
 from inferlab.engines.kv_cache import KVCacheEngine
 from inferlab.engines.base import GenerationConfig
 from inferlab.engines.from_scratch import FromScratchEngine
+from inferlab.engines.speculative import SpeculativeEngine
 
 TINY_MODEL = "hf-internal-testing/tiny-random-gpt2"
 TINY_QWEN_MODEL = "yujiepan/qwen2.5-tiny-random"
@@ -144,4 +145,30 @@ def test_from_scratch_matches_naive_greedy():
     from_scratch_result = from_scratch_engine.generate(input_ids, config=from_scratch_config)
     
     assert torch.equal(naive_result.generated_ids, from_scratch_result.generated_ids)
+    
+def test_speculative_matches_naive_greedy():
+    """
+    Uses the SAME tiny Qwen2.5 architecture fixture as both draft and
+    target -- a correctness test doesn't need real speedup or a genuinely
+    weaker draft model, it needs to verify the accept/reject mechanism
+    itself (shift-by-one alignment, cache truncation on rejection,
+    last_logits carry-over) runs correctly regardless of model size.
+    Float32 for the same precision-isolation reason as every other test.
+    """
+    model_naive = AutoModelForCausalLM.from_pretrained(TINY_QWEN_MODEL, torch_dtype=torch.float32)
+    model_speculative = AutoModelForCausalLM.from_pretrained(TINY_QWEN_MODEL, torch_dtype=torch.float32)
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN_MODEL)
+
+    prompt = "Hello, world!"    
+    input_ids = tokenizer(prompt, return_tensors="pt").input_ids 
+
+    naive_engine = NaiveEngine(model_naive, device="cpu")  # CPU is fine for a tiny model
+    naive_config = GenerationConfig(do_sample=False, max_new_tokens=5)
+    naive_result = naive_engine.generate(input_ids, config=naive_config)
+
+    speculative_engine = SpeculativeEngine(model_speculative, model_naive, device="cpu")  # CPU is fine for a tiny model
+    speculative_config = GenerationConfig(do_sample=False, max_new_tokens=5)
+    speculative_result = speculative_engine.generate(input_ids, config=speculative_config)
+
+    assert torch.equal(naive_result.generated_ids, speculative_result.generated_ids)
     

@@ -8,9 +8,6 @@ later engine just plugs in with zero changes to this file. Resist adding
 engine-specific branches here; if you feel the urge, it's a sign your
 Engine interface (base.py) needs a more general hook instead.
 """
-
-import csv
-import time
 from pathlib import Path
 
 import torch
@@ -85,6 +82,7 @@ def run_sweep(
                         "tokens_per_sec": throughput.tokens_per_sec,
                         "requests_per_sec": throughput.requests_per_sec,
                         "peak_vram_mb": mem / (1024 * 1024),
+                        "acceptance_rate": result.extra.get("acceptance_rate"),
                         "status": "SUCCESS"
                     })
 

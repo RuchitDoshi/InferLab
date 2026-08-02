@@ -59,7 +59,7 @@ class SpeculativeEngine(Engine):
         return F.linear(hidden_states, model.lm_head.weight)
 
     @torch.no_grad()
-    def generate(self, input_ids, config, attention_mask=None, tokenizer=None, naive_result=None):
+    def generate(self, input_ids, config, attention_mask=None):
         """
         TODO: the main loop. Sketch (fill in incrementally):
 
@@ -106,7 +106,6 @@ class SpeculativeEngine(Engine):
         logits = self._get_logits(self.model, hidden_states[:, -1:, :])
         last_logits = logits
         next_token_id = torch.argmax(logits.squeeze(1), dim=-1, keepdim=True)  # Greedy decoding for now
-        print(f"[initial prefill] first token: {next_token_id.item()}, decoded: {tokenizer.decode(next_token_id[0])}")
 
         timestamp_after_prefill = time.perf_counter()
         generated_tokens = [next_token_id]  # Start with the first generated token
@@ -125,17 +124,7 @@ class SpeculativeEngine(Engine):
             if len(generated_tokens) >= config.max_new_tokens:
                 break
 
-            print(f"[round start] generated_tokens so far: {[t.item() for t in generated_tokens]}, decoded: {tokenizer.decode(torch.cat(generated_tokens, dim=-1)[0])}")
-            naive_ids = naive_result.generated_ids[0].tolist()
-            current_ids = [t.item() for t in generated_tokens]
-            first_mismatch = next((i for i in range(min(len(naive_ids), len(current_ids))) if naive_ids[i] != current_ids[i]), None)
-            print(f"[round start] generated so far: {current_ids}, first mismatch vs naive at index: {first_mismatch}")
-
-            
-
             accepted_so_far = torch.cat([input_ids] + generated_tokens, dim=-1) if generated_tokens else input_ids
-            print(f"accepted_so_far shape={accepted_so_far.shape}, dtype={accepted_so_far.dtype}")
-            print(f"accepted_so_far values: {accepted_so_far}")
             
             drafted_tokens = []
 
@@ -159,7 +148,6 @@ class SpeculativeEngine(Engine):
             hidden_states = qwen_full_forward(drafted_tokens_tensor, self.model, kv_cache=target_cache)
             target_logits = self._get_logits(self.model, hidden_states)
 
-            print(f"[draft phase] drafted tokens: {[t.item() for t in drafted_tokens]}, decoded: {tokenizer.decode(torch.cat(drafted_tokens, dim=-1)[0])}")
             rejected = False
             for i in range(self.num_draft_tokens):
                 if len(generated_tokens) >= config.max_new_tokens:
@@ -173,9 +161,6 @@ class SpeculativeEngine(Engine):
             
                 else:
                     target_logit = torch.argmax(target_logits[:, i-1:i, :], dim=-1, keepdim=True).squeeze(1)
-
-                print(f"[verify phase] target argmax at each position: {[torch.argmax(target_logits[:, i, :], dim=-1).item() for i in range(self.num_draft_tokens)]}")
-                print(f"[verify phase] decoded: {tokenizer.decode(torch.tensor([torch.argmax(target_logits[:, i, :], dim=-1).item() for i in range(self.num_draft_tokens)]))}")
 
                 if target_logit.item() == drafted_token_id.item():
                     total_accepted += 1
@@ -201,8 +186,6 @@ class SpeculativeEngine(Engine):
             total_drafted += self.num_draft_tokens
             next_token_id = generated_tokens[-1]
 
-            print(f"[round end] len(generated_tokens)={len(generated_tokens)}, target_cache.current_length(0)={target_cache.current_length(0)}")
-
         if generated_tokens:
             generated_ids = torch.cat(generated_tokens, dim=-1)
         else:
@@ -219,8 +202,3 @@ class SpeculativeEngine(Engine):
             generate_start=generate_start_time,
             extra={"acceptance_rate": acceptance_rate, "total_accepted": total_accepted, "total_drafted": total_drafted},
         )
-
-
-
-
-            
