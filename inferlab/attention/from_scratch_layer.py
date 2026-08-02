@@ -19,7 +19,10 @@ def rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.
     Formula: x / sqrt(mean(x^2, over last dim) + eps) * weight
     x: (batch, seq_len, hidden_size), weight: (hidden_size,)
     """
+    d_type = x.dtype
+    x = x.to(torch.float32)  # ensure higher precision for RMS calculation
     rms = x * torch.rsqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + eps)
+    rms = rms.to(d_type)  # convert back to original dtype
     return rms * weight
 
 
@@ -148,19 +151,32 @@ def qwen_decoder_layer_forward(hidden_states, layer, config, layer_idx, kv_cache
 
     # Step 6: Repeat KV heads to match Q's head count
     k = repeat_kv(k, config.num_attention_heads // config.num_key_value_heads)
-    v = repeat_kv(v, config.num_attention_heads // config.num_key_value_heads)  
-
-    # Step 7: Scaled dot-product attention
+    v = repeat_kv(v, config.num_attention_heads // config.num_key_value_heads)
+  
+    # Step 7: Scaled dot-product attention in higher precision (float32) to avoid numerical issues
+    convert_back_to_float16 = False
+    if q.dtype == torch.float16:
+        q = q.to(torch.float32)
+        convert_back_to_float16 = True
+    if k.dtype == torch.float16:
+        k = k.to(torch.float32)
+        convert_back_to_float16 = True
     attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(head_dim)
 
     # Step 8: Causal mask
-    if position_offset == 0:
-        causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
+    if seq_len > 1:
+        total_len = position_offset + seq_len
+        query_positions = torch.arange(seq_len, device=x.device) + position_offset  # shape (seq_len,)
+        key_positions = torch.arange(total_len, device=x.device)                     # shape (total_len,)
+        causal_mask = key_positions[None, :] > query_positions[:, None]  # shape (seq_len, total_len)
         attn_scores = attn_scores.masked_fill(causal_mask, float('-inf'))
 
     # Step 9: Softmax and attention output
     attn_weights = F.softmax(attn_scores, dim=-1)
-    attn_output = torch.matmul(attn_weights, v)
+    attn_output = torch.matmul(attn_weights, v.to(attn_weights.dtype))
+    if convert_back_to_float16:
+        attn_output = attn_output.to(torch.float16)
+    
 
     # Step 10: Reshape back to (batch, seq_len, hidden_size) and project through output projection
     attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, hidden_size)

@@ -66,6 +66,17 @@ class KVCache:
         """cached sequence length for a SPECIFIC layer, before this call's update"""
         return 0 if layer_idx >= len(self.keys) else self.keys[layer_idx].size(2)
 
+    def truncate(self, target_length: int):
+        """
+        TODO: slice self.keys[layer_idx] and self.values[layer_idx] for EVERY
+        layer down to target_length along the sequence dimension, removing
+        everything after that point. Used by SpeculativeEngine to discard
+        rejected drafted tokens' K/V from the target cache after verification.
+        """
+        for layer_idx in range(len(self.keys)):
+            self.keys[layer_idx] = self.keys[layer_idx][:, :, :target_length]
+            self.values[layer_idx] = self.values[layer_idx][:, :, :target_length]
+
     def memory_bytes(self) -> int:
         """
         TODO(ruchit): compute actual bytes currently held by this cache
